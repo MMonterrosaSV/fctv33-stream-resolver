@@ -1,103 +1,205 @@
-let ui;
-let hls;
-
-function $(id) {
-  return document.getElementById(id);
+const elements = {
+  form: document.getElementById('resolve-form'),
+  streamPageUrl: document.getElementById('stream-page-url'),
+  submitButton: document.querySelector('#resolve-form button'),
+  resultsPanel: document.getElementById('results-panel'),
+  streamTitle: document.getElementById('stream-title'),
+  videoElement: document.getElementById('video-element'),
+  errorMessage: document.getElementById('error-message'),
+  exports: {
+    directUrl: document.getElementById('export-direct-url'),
+    browserUrl: document.getElementById('export-browser-url'),
+  },
+  timing: {
+    panel: document.getElementById('timing-panel'),
+    resolve: document.getElementById('timing-resolve'),
+    play: document.getElementById('timing-play'),
+    total: document.getElementById('timing-total'),
+  },
 }
 
-function status(text) {
-  ui.status.textContent = text;
+const playbackState = { hlsPlayer: null, generation: 0, timer: null }
+
+const formatMilliseconds = (milliseconds) =>
+  milliseconds < 1000 ? `${Math.round(milliseconds)}ms` : `${(milliseconds / 1000).toFixed(2)}s`
+
+const showError = (message) => {
+  elements.errorMessage.textContent = message
+  elements.errorMessage.hidden = false
 }
 
-function stop() {
-  if (hls) {
-    hls.destroy();
-    hls = null;
-  }
-  ui.player.removeAttribute("src");
-  ui.player.load();
+const stopTiming = () => {
+  if (!playbackState.timer) return
+  cancelAnimationFrame(playbackState.timer.animationFrame)
+  playbackState.timer = null
 }
 
-function play(url) {
-  stop();
-  const Hls = window.Hls;
-  if (!Hls?.isSupported()) {
-    status("HLS not supported in this browser");
-    return;
-  }
-  hls = new Hls({
-    enableWorker: true,
-    liveDurationInfinity: true,
-    liveSyncDurationCount: 3,
-    liveMaxLatencyDurationCount: 6,
-    fragLoadingTimeOut: 60000,
-    manifestLoadingTimeOut: 30000,
-  });
-  hls.loadSource(url);
-  hls.attachMedia(ui.player);
-  hls.on(Hls.Events.MANIFEST_PARSED, () => {
-    ui.player.play().catch(() => undefined);
-  });
-  hls.on(Hls.Events.ERROR, (_event, data) => {
-    if (!data.fatal) return;
-    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-      hls.startLoad();
-      return;
+const startTiming = () => {
+  stopTiming()
+  const { panel, resolve, play, total } = elements.timing
+  panel.hidden = false
+  resolve.textContent = '0ms'
+  play.textContent = 'waiting'
+  total.textContent = '0ms'
+  resolve.className = 'timing__val is-live'
+  play.className = 'timing__val'
+  total.className = 'timing__val is-live'
+  const startedAt = performance.now()
+  let resolvedAt = null
+  let playedAt = null
+  const tick = () => {
+    const now = performance.now()
+    if (resolvedAt == null) resolve.textContent = formatMilliseconds(now - startedAt)
+    if (resolvedAt != null && playedAt == null) {
+      play.textContent = formatMilliseconds(now - resolvedAt)
+      play.className = 'timing__val is-live'
     }
-    status(`Playback error: ${data.details ?? data.type ?? "unknown"}`);
-  });
+    if (playedAt == null) total.textContent = formatMilliseconds(now - startedAt)
+    if (playedAt == null) playbackState.timer.animationFrame = requestAnimationFrame(tick)
+  }
+  playbackState.timer = {
+    animationFrame: requestAnimationFrame(tick),
+    markResolved() {
+      if (resolvedAt != null) return
+      resolvedAt = performance.now()
+      resolve.textContent = formatMilliseconds(resolvedAt - startedAt)
+      resolve.className = 'timing__val is-done'
+      play.textContent = '0ms'
+      play.className = 'timing__val is-live'
+    },
+    markPlayed() {
+      if (playedAt != null) return
+      playedAt = performance.now()
+      if (resolvedAt == null) this.markResolved()
+      play.textContent = formatMilliseconds(playedAt - resolvedAt)
+      play.className = 'timing__val is-done'
+      total.textContent = formatMilliseconds(playedAt - startedAt)
+      total.className = 'timing__val is-done'
+      stopTiming()
+    },
+  }
+  return playbackState.timer
 }
 
-async function resolve() {
-  const pageUrl = ui.pageUrl.value.trim();
-  if (!pageUrl) {
-    status("Paste a fctv33hd.rest match page URL first");
-    return;
+const stopPlayback = () => {
+  playbackState.generation += 1
+  if (playbackState.hlsPlayer) {
+    playbackState.hlsPlayer.destroy()
+    playbackState.hlsPlayer = null
   }
-  if (ui.resolveBtn.disabled) return;
-  ui.resolveBtn.disabled = true;
-  status("Resolving…");
-  ui.playableUrl.value = "";
-  stop();
-  ui.results.hidden = true;
+  elements.videoElement.pause()
+  elements.videoElement.removeAttribute('src')
+  elements.videoElement.load()
+}
+
+const startPlayback = (playableUrl, timing) => {
+  stopPlayback()
+  const generation = playbackState.generation
+  const isCurrent = () => generation === playbackState.generation
+  return new Promise((resolve, reject) => {
+    let finished = false
+    const finish = (success, error) => {
+      if (!isCurrent() || finished) return
+      finished = true
+      elements.videoElement.removeEventListener('playing', onPlaying)
+      elements.videoElement.removeEventListener('error', onError)
+      success ? (elements.errorMessage.hidden = true, timing?.markPlayed(), resolve()) : reject(error)
+    }
+    const onPlaying = () => finish(true)
+    const onError = () => finish(false, new Error('playback failed'))
+    elements.videoElement.addEventListener('playing', onPlaying)
+    elements.videoElement.addEventListener('error', onError)
+    if (Hls.isSupported()) {
+      let started = false
+      playbackState.hlsPlayer = new Hls({
+        enableWorker: true,
+        liveDurationInfinity: true,
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 6,
+        fragLoadingTimeOut: 60000,
+        manifestLoadingTimeOut: 30000,
+      })
+      playbackState.hlsPlayer.on(Hls.Events.ERROR, (_, data) =>
+        data.fatal && finish(false, new Error(data.details || 'playback failed')),
+      )
+      playbackState.hlsPlayer.on(Hls.Events.FRAG_BUFFERED, () => {
+        if (!isCurrent() || started) return
+        started = true
+        elements.videoElement.play().catch(() => {})
+      })
+      playbackState.hlsPlayer.attachMedia(elements.videoElement)
+      playbackState.hlsPlayer.loadSource(playableUrl)
+      return
+    }
+    if (elements.videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+      elements.videoElement.src = playableUrl
+      elements.videoElement.addEventListener(
+        'canplay',
+        () => isCurrent() && elements.videoElement.play().catch(() => {}),
+        { once: true },
+      )
+      return
+    }
+    finish(false, new Error('HLS not supported'))
+  })
+}
+
+const bindExportFields = (result) => {
+  const { directUrl, browserUrl } = elements.exports
+  directUrl.value = result.streamUrl ?? ''
+  browserUrl.value = result.playableUrl ?? ''
+}
+
+const resolveStream = async () => {
+  const streamPageUrl = elements.streamPageUrl.value.trim()
+  if (!streamPageUrl) return showError('Paste the stream page URL from your browser address bar')
+  elements.submitButton.disabled = true
+  elements.errorMessage.hidden = true
+  elements.resultsPanel.hidden = true
+  stopPlayback()
+  stopTiming()
+  elements.timing.panel.hidden = true
+  const timing = startTiming()
   try {
-    const res = await fetch(`/api/resolve-link?url=${encodeURIComponent(pageUrl)}`);
-    const result = await res.json();
-    if (!res.ok) throw new Error(result.error ?? `Request failed (${res.status})`);
-    ui.playableUrl.value = result.playableUrl ?? "";
-    ui.results.hidden = false;
-    if (result.playableUrl) play(result.playableUrl);
-    status(result.name ? `Playing ${result.name}` : "Playing");
+    const response = await fetch(`/api/resolve-link?url=${encodeURIComponent(streamPageUrl)}`)
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.error ?? `Request failed (${response.status})`)
+    elements.streamTitle.textContent = result.name || 'Stream'
+    elements.resultsPanel.hidden = false
+    bindExportFields(result)
+    timing.markResolved()
+    if (result.playableUrl) await startPlayback(result.playableUrl, timing)
   } catch (error) {
-    status(error instanceof Error ? error.message : "Resolve failed");
+    stopTiming()
+    elements.timing.panel.hidden = true
+    showError(error instanceof Error ? error.message : 'Resolve failed')
   } finally {
-    ui.resolveBtn.disabled = false;
+    elements.submitButton.disabled = false
   }
 }
 
-ui = {
-  results: $("results"),
-  pageUrl: $("pageUrl"),
-  resolveBtn: $("resolveBtn"),
-  playableUrl: $("playableUrl"),
-  player: $("player"),
-  status: $("status"),
-};
-ui.resolveBtn.addEventListener("click", () => resolve());
-ui.pageUrl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") resolve();
-});
-document.querySelectorAll("[data-copy]").forEach((node) => {
-  node.addEventListener("click", () => {
-    const field = $(node.dataset.copy);
-    if (!field?.value) return;
-    navigator.clipboard.writeText(field.value).then(() => status("Copied"));
-  });
-});
-const queryUrl = new URLSearchParams(location.search).get("url")?.trim();
-if (queryUrl) {
-  ui.pageUrl.value = queryUrl;
-  resolve();
-} else {
-  status("Open fctv33hd.rest → Live or a sport → match page → paste URL");
+document.querySelectorAll('[data-copy]').forEach((button) => {
+  button.addEventListener('click', async () => {
+    const field = document.getElementById(button.dataset.copy)
+    if (!field?.value) return
+    await navigator.clipboard.writeText(field.value)
+    const label = button.textContent
+    button.textContent = 'Copied'
+    button.classList.add('ok')
+    setTimeout(() => {
+      button.textContent = label
+      button.classList.remove('ok')
+    }, 1200)
+  })
+})
+
+elements.form.addEventListener('submit', (event) => {
+  event.preventDefault()
+  resolveStream()
+})
+
+const queryStreamPageUrl = new URLSearchParams(location.search).get('url')?.trim()
+if (queryStreamPageUrl) {
+  elements.streamPageUrl.value = queryStreamPageUrl
+  resolveStream()
 }

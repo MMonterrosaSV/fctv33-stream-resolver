@@ -56,7 +56,7 @@ function readFields(buffer) {
   return fields;
 }
 
-export function decodeEnvelope(buffer) {
+export function parseApiEnvelope(buffer) {
   const fields = readFields(buffer);
   return {
     message: fields.get(3)?.[0]?.toString("utf8") ?? "",
@@ -64,7 +64,7 @@ export function decodeEnvelope(buffer) {
   };
 }
 
-export function decodeKvEntries(buffer) {
+export function parseSignatureEntries(buffer) {
   const entries = [];
   let offset = 0;
   while (offset < buffer.length) {
@@ -98,8 +98,8 @@ export function decodeKvEntries(buffer) {
   return entries;
 }
 
-export function decodeUserInfo(buffer) {
-  const { payload } = decodeEnvelope(buffer);
+export function parseUserGeo(buffer) {
+  const { payload } = parseApiEnvelope(buffer);
   if (!payload[0]) return {};
   const fields = readFields(payload[0]);
   return {
@@ -113,7 +113,7 @@ function readVarintField(buffer) {
   return readVarint(buffer, 0)[0];
 }
 
-function decodeStreamItem(buffer) {
+function parseStreamItem(buffer) {
   const fields = readFields(buffer);
   const streamIdChunk = fields.get(1)?.[0];
   const streamId =
@@ -128,17 +128,17 @@ function decodeStreamItem(buffer) {
   };
 }
 
-export function decodeMatchDetail(buffer) {
-  const { payload } = decodeEnvelope(buffer);
+export function parseMatchDetail(buffer) {
+  const { payload } = parseApiEnvelope(buffer);
   if (!payload[0]) return { stream: [] };
   const root = readFields(payload[0]);
-  return { stream: (root.get(2) ?? []).map(decodeStreamItem) };
+  return { stream: (root.get(2) ?? []).map(parseStreamItem) };
 }
 
-export function decodeStreamDetail(buffer) {
-  const { payload } = decodeEnvelope(buffer);
+export function parseStreamDetail(buffer) {
+  const { payload } = parseApiEnvelope(buffer);
   if (!payload[0]) return {};
   const fields = readFields(payload[0]);
   const streamBuffer = fields.get(2)?.[0] ?? fields.get(1)?.[0] ?? payload[0];
-  return decodeStreamItem(streamBuffer);
+  return parseStreamItem(streamBuffer);
 }
