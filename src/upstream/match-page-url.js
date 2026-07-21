@@ -64,6 +64,17 @@ function parseDataApiBaseUrlFromPage(pageHtml) {
   return `https://${match[0]}`;
 }
 
+function buildPlaySiteUrl(playerDomainBase, pageUrl) {
+  const source = new URL(pageUrl.trim());
+  const target = new URL(playerDomainBase);
+  target.pathname = source.pathname
+    .replace(/-match-(\d+)/, "-$1")
+    .replace(/-\d{2}-\d{4}(\.html)$/i, "$1");
+  target.searchParams.set("icg", "UEs");
+  target.searchParams.set("ilang", source.searchParams.get("ilang") || "en");
+  return target.href;
+}
+
 export function validateStreamPageUrl(input) {
   if (!input?.trim()) return { ok: false, error: "Paste the stream page URL from your browser address bar" };
   try {
@@ -81,13 +92,23 @@ export function validateStreamPageUrl(input) {
 }
 
 export async function parseMatchPageUrl(input, apiClient) {
-  const pageUrl = input.trim();
-  const parsed = parseMatchPagePath(pageUrl);
+  let pageUrl = input.trim();
+  let parsed = parseMatchPagePath(pageUrl);
   if (!parsed) throw new Error("Could not parse match page URL");
-  const requestContext = { pageReferer: parsed.pageReferer, pageOrigin: parsed.pageOrigin };
-  const pageHtml = await apiClient.fetchMatchPageHtml(pageUrl, requestContext);
+  let requestContext = { pageReferer: parsed.pageReferer, pageOrigin: parsed.pageOrigin };
+  let pageHtml = await apiClient.fetchMatchPageHtml(pageUrl, requestContext);
   apiClient.setDataApiBaseUrl(parseDataApiBaseUrlFromPage(pageHtml));
-  const streamSiteDigit = parseStreamSiteDigitFromPage(pageHtml);
+  let streamSiteDigit = parseStreamSiteDigitFromPage(pageHtml);
+  const playerDomain = (await apiClient.fetchPlayerDomainBases(streamSiteDigit, requestContext))[0];
+  if (playerDomain && new URL(playerDomain).hostname !== new URL(pageUrl).hostname) {
+    pageUrl = buildPlaySiteUrl(playerDomain, pageUrl);
+    parsed = parseMatchPagePath(pageUrl);
+    if (!parsed) throw new Error("Could not parse play site URL");
+    requestContext = { pageReferer: parsed.pageReferer, pageOrigin: parsed.pageOrigin };
+    pageHtml = await apiClient.fetchMatchPageHtml(pageUrl, requestContext);
+    apiClient.setDataApiBaseUrl(parseDataApiBaseUrlFromPage(pageHtml));
+    streamSiteDigit = parseStreamSiteDigitFromPage(pageHtml);
+  }
   const playerReferer = await apiClient.resolvePlayerReferer(streamSiteDigit, requestContext);
   return { ...parsed, streamSiteDigit, playerReferer };
 }

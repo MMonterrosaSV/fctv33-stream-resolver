@@ -37,6 +37,7 @@ export async function resolveStream(pageUrl, origin) {
     return Response.json({
       name: stream.name,
       streamUrl,
+      referer: parsed.playerReferer,
       playableUrl: buildProxyUrl(streamUrl, parsed.playerReferer, origin),
     });
   } catch (error) {

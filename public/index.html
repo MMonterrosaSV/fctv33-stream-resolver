@@ -44,19 +44,15 @@
           <span class="timing__label">First frame</span>
           <span id="timing-play" class="timing__val">—</span>
         </li>
-        <li>
-          <span class="timing__label">Total</span>
-          <span id="timing-total" class="timing__val">—</span>
-        </li>
       </ul>
     </section>
 
     <section id="results-panel" class="stack" hidden>
       <div class="card">
         <h2 id="stream-title" class="stream-title">Stream</h2>
-        <div class="player">
-          <div id="video-player"><video id="video-element" controls playsinline></video></div>
-        </div>
+          <div class="player">
+            <video id="video-element" controls playsinline></video>
+          </div>
       </div>
 
       <div class="card">
@@ -64,8 +60,8 @@
         <ul class="exports">
           <li>
             <div class="export__meta">
-              <span class="export__name">Direct URL</span>
-              <span class="export__hint">Upstream M3U8 URL</span>
+              <span class="export__name">Direct</span>
+              <span class="export__hint">Resolved upstream stream URL</span>
             </div>
             <div class="export__row">
               <input id="export-direct-url" readonly>
@@ -74,12 +70,32 @@
           </li>
           <li>
             <div class="export__meta">
-              <span class="export__name">Browser URL</span>
-              <span class="export__hint">Browser playback URL</span>
+              <span class="export__name">Proxied</span>
+              <span class="export__hint">Play through this resolver’s HLS proxy</span>
             </div>
             <div class="export__row">
-              <input id="export-browser-url" readonly>
-              <button type="button" data-copy="export-browser-url">Copy</button>
+              <input id="export-proxied-url" readonly>
+              <button type="button" data-copy="export-proxied-url">Copy</button>
+            </div>
+          </li>
+          <li>
+            <div class="export__meta">
+              <span class="export__name">VLC</span>
+              <span class="export__hint">Direct stream + real iframe Referer</span>
+            </div>
+            <div class="export__row">
+              <input id="export-vlc-url" readonly>
+              <button type="button" data-copy="export-vlc-url">Copy</button>
+            </div>
+          </li>
+          <li>
+            <div class="export__meta">
+              <span class="export__name">mpv</span>
+              <span class="export__hint">Direct stream + real iframe Referer</span>
+            </div>
+            <div class="export__row">
+              <input id="export-mpv-url" readonly>
+              <button type="button" data-copy="export-mpv-url">Copy</button>
             </div>
           </li>
         </ul>

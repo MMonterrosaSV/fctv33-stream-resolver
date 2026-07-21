@@ -55,9 +55,12 @@ function rewriteManifest(body, targetUrl, playerReferer, origin) {
     .split("\n")
     .map((line) => {
       const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) return line;
+      if (!trimmed) return line;
+      if (trimmed.startsWith("#EXT-X-START")) return null;
+      if (trimmed.startsWith("#")) return line;
       return buildProxyUrl(new URL(trimmed, base).href, playerReferer, origin);
     })
+    .filter((line) => line !== null)
     .join("\n");
 }
 

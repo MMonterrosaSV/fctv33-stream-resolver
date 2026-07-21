@@ -8,13 +8,14 @@ const elements = {
   errorMessage: document.getElementById('error-message'),
   exports: {
     directUrl: document.getElementById('export-direct-url'),
-    browserUrl: document.getElementById('export-browser-url'),
+    proxiedUrl: document.getElementById('export-proxied-url'),
+    vlcUrl: document.getElementById('export-vlc-url'),
+    mpvUrl: document.getElementById('export-mpv-url'),
   },
   timing: {
     panel: document.getElementById('timing-panel'),
     resolve: document.getElementById('timing-resolve'),
     play: document.getElementById('timing-play'),
-    total: document.getElementById('timing-total'),
   },
 }
 
@@ -36,14 +37,12 @@ const stopTiming = () => {
 
 const startTiming = () => {
   stopTiming()
-  const { panel, resolve, play, total } = elements.timing
+  const { panel, resolve, play } = elements.timing
   panel.hidden = false
   resolve.textContent = '0ms'
   play.textContent = 'waiting'
-  total.textContent = '0ms'
   resolve.className = 'timing__val is-live'
   play.className = 'timing__val'
-  total.className = 'timing__val is-live'
   const startedAt = performance.now()
   let resolvedAt = null
   let playedAt = null
@@ -54,7 +53,6 @@ const startTiming = () => {
       play.textContent = formatMilliseconds(now - resolvedAt)
       play.className = 'timing__val is-live'
     }
-    if (playedAt == null) total.textContent = formatMilliseconds(now - startedAt)
     if (playedAt == null) playbackState.timer.animationFrame = requestAnimationFrame(tick)
   }
   playbackState.timer = {
@@ -73,8 +71,6 @@ const startTiming = () => {
       if (resolvedAt == null) this.markResolved()
       play.textContent = formatMilliseconds(playedAt - resolvedAt)
       play.className = 'timing__val is-done'
-      total.textContent = formatMilliseconds(playedAt - startedAt)
-      total.className = 'timing__val is-done'
       stopTiming()
     },
   }
@@ -111,22 +107,39 @@ const startPlayback = (playableUrl, timing) => {
     elements.videoElement.addEventListener('error', onError)
     if (Hls.isSupported()) {
       let started = false
+      const liveSyncSegments = 3
       playbackState.hlsPlayer = new Hls({
-        enableWorker: true,
+        enableWorker: false,
         liveDurationInfinity: true,
-        liveSyncDurationCount: 3,
-        liveMaxLatencyDurationCount: 6,
-        fragLoadingTimeOut: 60000,
-        manifestLoadingTimeOut: 30000,
+        startPosition: -1,
+        liveSyncDurationCount: liveSyncSegments,
+        liveMaxLatencyDurationCount: liveSyncSegments + 3,
+        maxLiveSyncPlaybackRate: 1.2,
+        maxBufferLength: 30,
+        backBufferLength: 0,
+        fragLoadingTimeOut: 25000,
+        manifestLoadingTimeOut: 20000,
       })
       playbackState.hlsPlayer.on(Hls.Events.ERROR, (_, data) =>
         data.fatal && finish(false, new Error(data.details || 'playback failed')),
       )
-      playbackState.hlsPlayer.on(Hls.Events.FRAG_BUFFERED, () => {
+      const startWhenLiveReady = () => {
         if (!isCurrent() || started) return
+        const hls = playbackState.hlsPlayer
+        const video = elements.videoElement
+        const syncPos = hls?.liveSyncPosition
+        if (syncPos == null) return
+        const buffered = video.buffered
+        if (!buffered.length) return
+        const segmentDuration = hls.levels?.[hls.currentLevel]?.details?.targetduration ?? 3
+        const bufferEnd = buffered.end(buffered.length - 1)
+        if (bufferEnd < syncPos + segmentDuration * liveSyncSegments) return
+        if (Math.abs(video.currentTime - syncPos) > 0.25) video.currentTime = syncPos
         started = true
-        elements.videoElement.play().catch(() => {})
-      })
+        video.play().catch(() => {})
+      }
+      playbackState.hlsPlayer.on(Hls.Events.FRAG_BUFFERED, startWhenLiveReady)
+      playbackState.hlsPlayer.on(Hls.Events.LEVEL_UPDATED, startWhenLiveReady)
       playbackState.hlsPlayer.attachMedia(elements.videoElement)
       playbackState.hlsPlayer.loadSource(playableUrl)
       return
@@ -144,10 +157,19 @@ const startPlayback = (playableUrl, timing) => {
   })
 }
 
+const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`
+
 const bindExportFields = (result) => {
-  const { directUrl, browserUrl } = elements.exports
-  directUrl.value = result.streamUrl ?? ''
-  browserUrl.value = result.playableUrl ?? ''
+  const { directUrl, proxiedUrl, vlcUrl, mpvUrl } = elements.exports
+  const streamUrl = result.streamUrl ?? ''
+  const referer = result.referer ?? ''
+  const playableUrl = result.playableUrl ?? ''
+  directUrl.value = streamUrl
+  proxiedUrl.value = playableUrl
+  vlcUrl.value =
+    streamUrl && referer ? `vlc --http-referrer ${shellQuote(referer)} ${shellQuote(streamUrl)}` : ''
+  mpvUrl.value =
+    streamUrl && referer ? `mpv --referrer=${shellQuote(referer)} ${shellQuote(streamUrl)}` : ''
 }
 
 const resolveStream = async () => {

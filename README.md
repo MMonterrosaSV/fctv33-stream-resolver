@@ -42,11 +42,12 @@ curl "http://localhost:8787/api/resolve-link?url=https://example.com/basketball/
 {
   "name": "Lakers vs Celtics",
   "streamUrl": "https://cdn.example.com/token-…/index.m3u8",
+  "referer": "https://player.example.com/",
   "playableUrl": "http://localhost:8787/api/hls?url=…&referer=…"
 }
 ```
 
-Use `playableUrl` — a direct stream link you can open in VLC, Stremio, mpv, Kodi, or any other HLS client. Set `PORT` to override the default `8787`.
+Use `playableUrl` for any HLS client that cannot set CDN headers, or open `streamUrl` in VLC/mpv with the returned `referer`. Set `PORT` to override the default `8787`.
 
 ## What problem does this solve?
 
@@ -68,9 +69,10 @@ Nothing is hardcoded per site — API hosts, player referers, and request signat
 | Match page parsing | Extracts `matchId`, `sportType`, site digit, and data API host from any supported FCTV33 match URL |
 | Signed API chain | MD5-prefixed path signing, protobuf envelope parsing, geo-aware stream detail |
 | Token URL builder | ROT47 decode → AES-256-CBC session token → tokenized CDN m3u8 path |
-| HLS proxy | Rewrites m3u8 manifests, decodes `_ctump` / `_ctuph` segment URLs, unwraps PNG-wrapped MPEG-TS |
+| HLS proxy | Rewrites m3u8 manifests, strips CDN `#EXT-X-START`, decodes `_ctump` / `_ctuph` segment URLs, unwraps PNG-wrapped MPEG-TS |
 | Referer injection | Applies iframe player `Referer` and `Origin` on every upstream CDN fetch |
-| Browser UI | Built-in web player with hls.js, resolve timing, and exportable direct/proxied URLs |
+| Browser UI | Built-in web player with hls.js, resolve timing, and exports for Direct, Proxied, VLC, and mpv |
+| Marketing → play site | Redirects marketing hosts (e.g. `fctv33.com`) to the real play domain from `g_player_domains` before resolving |
 | Zero runtime deps | Node.js built-ins only — `node:http`, `node:crypto`, native `fetch` |
 
 Supported sports include football, basketball, tennis, baseball, cricket, hockey, rugby, motorsport, and more. See [`src/config/site.js`](src/config/site.js) for the full sport slug map.
@@ -80,8 +82,8 @@ Supported sports include football, basketball, tennis, baseball, cricket, hockey
 | Scenario | Description |
 | --- | --- |
 | Web UI playback | Submit a match page URL at `/`; the resolver returns stream metadata and starts live playback through the built-in player. |
-| External playback | Copy `playableUrl` (Browser URL) and open it as a direct stream link in any HLS client — see [The proxied link](#the-proxied-link-is-a-direct-stream-url). |
-| API integration | Call `GET /api/resolve-link?url=` from scripts, services, or automation. Feed `playableUrl` to downstream consumers without handling CDN referer headers. |
+| External playback | Copy **Proxied** (`playableUrl`) into any HLS client, or copy the **VLC** / **mpv** CLI lines (direct `streamUrl` + iframe `referer`) — see [The proxied link](#the-proxied-link-is-a-direct-stream-url). |
+| API integration | Call `GET /api/resolve-link?url=` from scripts, services, or automation. Feed `playableUrl` to consumers that cannot set CDN headers, or use `streamUrl` + `referer` when the client can. |
 | Custom front-end | Replace the default UI while keeping the two-endpoint contract. See [`public/app.js`](public/app.js) for hls.js wiring against `playableUrl`. |
 | Deep-link resolve | Pass `?url=` on the web UI root to resolve a match page on load without manual input. |
 | Upstream protocol study | Trace the full resolve path in source: HTML scrape, signed API bootstrap, protobuf parsing, AES token URL construction, and HLS manifest rewrite. |
@@ -110,12 +112,13 @@ sequenceDiagram
   R->>P: validateStreamPageUrl
   P->>Page: fetch HTML (page Referer / Origin)
   P->>P: digit, apis-data host from HTML
-  P->>API: /api/common/params → iframe player domain
+  P->>API: /api/common/params → g_player_domains + iframe player domain
+  P->>Page: if marketing host, re-fetch play-site HTML
   R->>A: geo, match detail, stream detail
   A->>API: signed + protobuf requests
   API-->>A: obfuscated url, rb-session
   A->>T: buildSignedStreamUrl
-  R-->>C: name, streamUrl, playableUrl
+  R-->>C: name, streamUrl, referer, playableUrl
 ```
 
 ### What URL format is accepted?
@@ -130,16 +133,18 @@ https://{any-host}/{optional-locale}/{sport}/{slug}-{matchId}.html
 
 The page is fetched with `Referer` and `Origin` set to the stream page origin. From the HTML, two values are extracted: the data API host (`apis-data\d+\.[a-z0-9.-]+`) and the stream site digit (`layout:"livestream-{digit}"`).
 
+Marketing or listing hosts (for example `fctv33.com`) often use a digit without `iframePlayerDomains`. In that case [`parseMatchPageUrl`](src/upstream/match-page-url.js) reads `g_player_domains[digit]` from `/api/common/params`, builds the play-site URL (path `-match-{id}` → `-{id}`, strip trailing `-{mm}-{yyyy}` before `.html`, set `icg` / `ilang`), and re-fetches that page so the digit and iframe referer come from the real player host.
+
 ### What referer contexts are used?
 
 Two referer values are used downstream:
 
 | Context | Source | Used for |
 | --- | --- | --- |
-| Page | Stream page URL origin | Match page fetch, geo, signature bootstrap, match detail |
+| Page | Stream / play page URL origin | Match page fetch, geo, signature bootstrap, match detail |
 | Player | `iframePlayerDomains[digit]` from `common:web:client` | Stream detail, CDN access via `/api/hls` |
 
-Player domain comes from `GET {apiBase}/api/common/params` (ROT47-encoded JSON). If no iframe domain exists for the digit, resolution fails.
+Player domain comes from `GET {apiBase}/api/common/params` (ROT47-encoded JSON), after any marketing → play-site hop. If no iframe domain exists for the digit on the play page, resolution fails.
 
 ### What is the upstream API chain?
 
@@ -162,7 +167,7 @@ Match detail is signed: params sorted per `REQUEST_PARAM_ORDER`, six-character M
 2. AES-256-CBC encrypt the `rb-session` token.
 3. Insert `token-{encryptedBase64}a` into the path.
 
-The response contains `streamUrl` (raw upstream m3u8) and `playableUrl` (`/api/hls` with `referer` set to the player domain).
+The response contains `streamUrl` (raw upstream m3u8), `referer` (iframe player origin), and `playableUrl` (`/api/hls` with that referer).
 
 ## How does HLS playback work?
 
@@ -170,11 +175,18 @@ CDN m3u8 and segment requests require the iframe player as `Referer` and `Origin
 
 ### The proxied link is a direct stream URL
 
-`playableUrl` (shown as **Browser URL** in the web UI) is a ready-to-play stream link — not a page URL and not a embed. Copy it after resolve and paste it into any app that accepts an m3u8 URL. No extra setup per player; the proxy handles referer headers and manifest rewrite upstream.
+`playableUrl` (shown as **Proxied** in the web UI) is a ready-to-play stream link — not a page URL and not an embed. Copy it after resolve and paste it into any app that accepts an m3u8 URL. No extra setup per player; the proxy handles referer headers and manifest rewrite upstream.
 
-Works with VLC, Stremio, mpv, Kodi, PotPlayer, IINA, ffplay, IPTV apps (TiviMate, IPTV Smarters), OBS, Safari, mobile players, Smart TV apps, and any other HLS client or competitor that opens network stream URLs.
+**VLC** and **mpv** exports use the raw `streamUrl` with the real iframe `referer` instead of the proxy:
 
-The resolver must be reachable from the device running the player: use `localhost` on the same host, or substitute the host's LAN IP when playing from another machine on the network. `/api/hls` responses include CORS headers for cross-origin browser access.
+```bash
+vlc --http-referrer 'https://player.example.com/' 'https://cdn…/index.m3u8'
+mpv --referrer='https://player.example.com/' 'https://cdn…/index.m3u8'
+```
+
+Works with VLC, Stremio, mpv, Kodi, PotPlayer, IINA, ffplay, IPTV apps (TiviMate, IPTV Smarters), OBS, Safari, mobile players, Smart TV apps, and any other HLS client that opens network stream URLs.
+
+For `playableUrl`, the resolver must be reachable from the device running the player: use `localhost` on the same host, or substitute the host's LAN IP when playing from another machine on the network. `/api/hls` responses include CORS headers for cross-origin browser access.
 
 ```mermaid
 flowchart TB
@@ -205,18 +217,18 @@ Each `GET /api/hls?url=&referer=` request:
 
 1. Fetches upstream with CDN headers derived from `referer`.
 2. Decodes `_ctump` / `_ctuph` segment URLs when present ([`src/crypto/segment-url.js`](src/crypto/segment-url.js)).
-3. Rewrites `#EXTM3U` media lines to `/api/hls` so the consumer never leaves the resolver origin.
+3. Rewrites `#EXTM3U` media lines to `/api/hls` so the consumer never leaves the resolver origin, and strips `#EXT-X-START`. The CDN’s positive `TIME-OFFSET=4` would otherwise force hls.js to start ~41s back on a 45s window.
 4. Unwraps PNG-contained MPEG-TS and returns `video/mp2t` when the sync byte is `0x47`.
 
 Upstream HTML or non-2xx responses return `502`.
 
-The reference client ([`public/app.js`](public/app.js)) consumes `playableUrl` via hls.js or native HLS and does not set CDN headers. Live playback uses a 3-segment sync window with 6-segment max latency.
+The reference client ([`public/app.js`](public/app.js)) consumes `playableUrl` via hls.js or native HLS and does not set CDN headers. Live edge delay is controlled in the player: `liveSyncDurationCount: 3` (three 3s segments ≈ 9s behind live), `startPosition: -1`, and playback starts only after that much buffer is loaded at `liveSyncPosition`.
 
 ## REST API reference
 
 | Route | Params | Response |
 | --- | --- | --- |
-| `GET /api/resolve-link` | `url` — match stream page URL | `{ name, streamUrl, playableUrl }` or `{ error }` |
+| `GET /api/resolve-link` | `url` — match stream page URL | `{ name, streamUrl, referer, playableUrl }` or `{ error }` |
 | `GET /api/hls` | `url` — upstream m3u8 or segment URL; `referer` — iframe player referer | Rewritten m3u8 text or MPEG-TS bytes |
 
 ### `GET /api/resolve-link`
@@ -233,6 +245,7 @@ Resolves a match stream page URL to a playable HLS link.
 {
   "name": "Team A vs Team B",
   "streamUrl": "https://cdn…/token-…/index.m3u8",
+  "referer": "https://player…/",
   "playableUrl": "http://localhost:8787/api/hls?url=…&referer=…"
 }
 ```
@@ -286,9 +299,9 @@ public/
 ## FAQ
 
 <details>
-<summary>What is the difference between streamUrl and playableUrl?</summary>
+<summary>What is the difference between streamUrl, referer, and playableUrl?</summary>
 
-`streamUrl` is the raw upstream tokenized m3u8 on the CDN — it needs iframe referer headers and is not a direct playback link. `playableUrl` is the proxied direct stream URL with headers handled by `/api/hls`. Always copy `playableUrl` for VLC, Stremio, mpv, or any other player.
+`streamUrl` is the raw upstream tokenized m3u8 on the CDN — it needs the iframe `referer`. `referer` is that player origin. `playableUrl` is the proxied stream URL with headers handled by `/api/hls`. Use `playableUrl` for clients that cannot set referer headers; use `streamUrl` + `referer` (or the UI’s VLC/mpv CLI lines) when the client can.
 </details>
 
 <details>

@@ -43,12 +43,14 @@ export class UpstreamApiClient {
   constructor() {
     this.signatureKeys = new Map();
     this.signatureCacheKey = "";
+    this.siteConfig = null;
     this.webClients = null;
     this.dataApiBaseUrl = null;
   }
 
   setDataApiBaseUrl(dataApiBaseUrl) {
     this.dataApiBaseUrl = dataApiBaseUrl.replace(/\/$/, "");
+    this.siteConfig = null;
     this.webClients = null;
   }
 
@@ -58,10 +60,12 @@ export class UpstreamApiClient {
   }
 
   async fetchSiteConfig(context) {
+    if (this.siteConfig) return this.siteConfig;
     const response = await fetch(`${this.apiBaseUrl()}/api/common/params`, {
       headers: buildHeaders(context),
     });
-    return JSON.parse(rot47(await response.text()));
+    this.siteConfig = JSON.parse(rot47(await response.text()));
+    return this.siteConfig;
   }
 
   async fetchWebClients(context) {
@@ -73,6 +77,14 @@ export class UpstreamApiClient {
     }
     this.webClients = webClients;
     return this.webClients;
+  }
+
+  async fetchPlayerDomainBases(streamSiteDigit, context) {
+    const config = await this.fetchSiteConfig(context);
+    const domains = JSON.parse(config.g_player_domains);
+    const list = domains?.[streamSiteDigit];
+    if (!Array.isArray(list)) return [];
+    return list.filter((item) => /^https?:\/\//i.test(item));
   }
 
   async fetchMatchPageHtml(pageUrl, context) {

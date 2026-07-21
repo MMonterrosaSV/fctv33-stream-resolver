@@ -136,16 +136,6 @@ body {
   flex: 1;
 }
 
-.resolve__field input[type="url"] {
-  width: 100%;
-  padding: 11px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
-  color: var(--text);
-  font: inherit;
-}
-
 .resolve__row--form > button {
   align-self: end;
 }
@@ -279,18 +269,13 @@ button.ok {
 }
 
 .player {
+  position: relative;
   width: 100%;
+  aspect-ratio: 16 / 9;
   border-radius: 8px;
   overflow: hidden;
   background: #000;
   border: 1px solid var(--border);
-}
-
-#video-player {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  background: #000;
 }
 
 #video-element {
